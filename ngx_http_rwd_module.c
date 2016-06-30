@@ -15,7 +15,7 @@ static ngx_int_t ngx_http_rwd_preaccess_handler(ngx_http_request_t *r);
 static ngx_command_t ngx_http_rwd_commands[] = {
     {
         ngx_string("rwd"),
-        NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+        NGX_HTTP_MAIN_CONF|NGX_CONF_FLAG,
         ngx_conf_set_flag_slot,
         NGX_HTTP_MAIN_CONF_OFFSET,
         offsetof(ngx_http_rwd_main_conf_t, rwd_enable),
@@ -62,6 +62,7 @@ ngx_http_rwd_create_main_conf(ngx_conf_t *cf)
     if (conf == NULL) {
         return NULL;
     }
+    conf->rwd_enable = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -69,10 +70,6 @@ ngx_http_rwd_create_main_conf(ngx_conf_t *cf)
 static char *
 ngx_http_rwd_init_main_conf(ngx_conf_t *cf, void *conf)
 {
-    ngx_http_rwd_main_conf_t *rmcf = conf;
-
-    rmcf->rwd_enable = 0;
-
     return NGX_CONF_OK;
 }
 
@@ -97,5 +94,12 @@ ngx_http_rwd_init(ngx_conf_t *cf)
 static ngx_int_t
 ngx_http_rwd_preaccess_handler(ngx_http_request_t *r)
 {
+    ngx_http_rwd_main_conf_t *rmcf;
+
+    rmcf = ngx_http_get_module_main_conf(r, ngx_http_rwd_module);
+    if (!rmcf->rwd_enable) {
+        return NGX_DECLINED;
+    }
+
     return NGX_DECLINED;
 }
