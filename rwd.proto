@@ -1,0 +1,4 @@
+message RwdCopyReqMsg {
+    required uint32 client_ip = 1;
+    required string uri = 2;
+}

@@ -1,3 +1,4 @@
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -5,6 +6,8 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 #include <ngx_socket.h>
+
+#include "rwd.pb-c.h"
 
 typedef struct
 {
@@ -112,16 +115,47 @@ ngx_http_rwd_init(ngx_conf_t *cf)
     return NGX_OK;
 }
 
+static char *
+rwd_pstrdup(ngx_pool_t *pool, ngx_str_t *src)
+{
+    char *dst;
+
+    dst = (char *)ngx_pnalloc(pool, src->len + 1);
+    if (dst == NULL) {
+        return NULL;
+    }
+
+    (void) ngx_copy(dst, src->data, src->len);
+    dst[src->len] = '\0';
+
+    return dst;
+}
+
 static ngx_int_t
 ngx_http_rwd_preaccess_handler(ngx_http_request_t *r)
 {
     ngx_http_rwd_main_conf_t *rmcf;
+    RwdCopyReqMsg rcrm = RWD_COPY_REQ_MSG__INIT;
+    uint8_t *buf;
+    size_t n;
 
     rmcf = (ngx_http_rwd_main_conf_t *)ngx_http_get_module_main_conf(
         r, ngx_http_rwd_module);
     if (!rmcf->rwd_enable) {
         return NGX_DECLINED;
     }
+
+    rcrm.client_ip = 0;
+    rcrm.uri = rwd_pstrdup(r->pool, &r->uri);
+    n = rwd_copy_req_msg__get_packed_size(&rcrm);
+    buf = (uint8_t *)ngx_palloc(r->pool, n);
+    if (buf == NULL) {
+        return NGX_DECLINED;
+    }
+    rwd_copy_req_msg__pack(&rcrm, buf);
+
+    send(ngx_rwd_copy_req_fd, buf, n, MSG_DONTWAIT);
+    ngx_pfree(r->pool, buf);
 
     return NGX_DECLINED;
 }
