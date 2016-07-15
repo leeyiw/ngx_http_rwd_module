@@ -9,17 +9,29 @@
 
 #include "rwd.pb-c.h"
 
-typedef struct
-{
+#define NGX_HTTP_RWD_DEFAULT_SHM_SIZE   (32*1024*1024)
+
+typedef struct {
     ngx_flag_t rwd_enable;
     ngx_str_t rwd_copy_req_sock;
 } ngx_http_rwd_main_conf_t;
 
+typedef struct {
+} ngx_http_rwd_shctx_t;
+
+typedef struct {
+    ngx_http_rwd_shctx_t *sh;
+    ngx_slab_pool_t *shpool;
+} ngx_http_rwd_ctx_t;
+
 static void *ngx_http_rwd_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_rwd_init_main_conf(ngx_conf_t *cf, void *conf);
 static ngx_int_t ngx_http_rwd_init(ngx_conf_t *cf);
-static ngx_int_t ngx_http_rwd_preaccess_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_rwd_init_worker(ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_rwd_preaccess_handler(ngx_http_request_t *r);
+static char *ngx_http_rwd_config(ngx_conf_t *cf, ngx_command_t *cmd,
+                                 void *conf);
+static ngx_int_t ngx_http_rwd_config_handler(ngx_http_request_t *r);
 
 static ngx_command_t ngx_http_rwd_commands[] = {
     {
@@ -36,6 +48,14 @@ static ngx_command_t ngx_http_rwd_commands[] = {
         ngx_conf_set_str_slot,
         NGX_HTTP_MAIN_CONF_OFFSET,
         offsetof(ngx_http_rwd_main_conf_t, rwd_copy_req_sock),
+        NULL
+    },
+    {
+        ngx_string("rwd_config"),
+        NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
+        ngx_http_rwd_config,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        0,
         NULL
     },
     ngx_null_command
@@ -71,6 +91,8 @@ ngx_module_t ngx_http_rwd_module = {
 };
 
 static ngx_socket_t ngx_rwd_copy_req_fd = 0;
+static ngx_shm_zone_t *ngx_rwd_shm_zone = NULL;
+static ngx_http_rwd_ctx_t ngx_rwd_ctx;
 
 static void *
 ngx_http_rwd_create_main_conf(ngx_conf_t *cf)
@@ -92,7 +114,33 @@ ngx_http_rwd_create_main_conf(ngx_conf_t *cf)
 static char *
 ngx_http_rwd_init_main_conf(ngx_conf_t *cf, void *conf)
 {
+    (void) cf;
+    (void) conf;
+
     return NGX_CONF_OK;
+}
+
+static ngx_int_t
+ngx_http_rwd_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
+{
+    ngx_http_rwd_ctx_t *octx = (ngx_http_rwd_ctx_t *)data;
+    ngx_http_rwd_ctx_t *ctx = (ngx_http_rwd_ctx_t *)shm_zone->data;
+
+    if (octx) {
+        ctx->sh = octx->sh;
+        ctx->shpool = octx->shpool;
+
+        return NGX_OK;
+    }
+
+    ctx->shpool = (ngx_slab_pool_t *)shm_zone->shm.addr;
+    ctx->sh = (ngx_http_rwd_shctx_t *)ngx_slab_alloc(
+        ctx->shpool, sizeof(ngx_http_rwd_shctx_t));
+    if (ctx->sh == NULL) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
 }
 
 static ngx_int_t
@@ -100,64 +148,28 @@ ngx_http_rwd_init(ngx_conf_t *cf)
 {
     ngx_http_handler_pt *h;
     ngx_http_core_main_conf_t *cmcf;
+    ngx_str_t shm_name = ngx_string("rwd");
 
     cmcf = (ngx_http_core_main_conf_t *)ngx_http_conf_get_module_main_conf(
         cf, ngx_http_core_module);
+
+    ngx_rwd_shm_zone = ngx_shared_memory_add(cf, &shm_name,
+                                             NGX_HTTP_RWD_DEFAULT_SHM_SIZE,
+                                             &ngx_http_rwd_module);
+    if (ngx_rwd_shm_zone == NULL) {
+        return NGX_ERROR;
+    }
+    ngx_rwd_shm_zone->init = ngx_http_rwd_init_shm_zone;
+    ngx_rwd_shm_zone->data = &ngx_rwd_ctx;
 
     h = (ngx_http_handler_pt *)ngx_array_push(
         &cmcf->phases[NGX_HTTP_PREACCESS_PHASE].handlers);
     if (h == NULL) {
         return NGX_ERROR;
     }
-
     *h = ngx_http_rwd_preaccess_handler;
 
     return NGX_OK;
-}
-
-static char *
-rwd_pstrdup(ngx_pool_t *pool, ngx_str_t *src)
-{
-    char *dst;
-
-    dst = (char *)ngx_pnalloc(pool, src->len + 1);
-    if (dst == NULL) {
-        return NULL;
-    }
-
-    (void) ngx_copy(dst, src->data, src->len);
-    dst[src->len] = '\0';
-
-    return dst;
-}
-
-static ngx_int_t
-ngx_http_rwd_preaccess_handler(ngx_http_request_t *r)
-{
-    ngx_http_rwd_main_conf_t *rmcf;
-    RwdCopyReqMsg rcrm = RWD_COPY_REQ_MSG__INIT;
-    uint8_t *buf;
-    size_t n;
-
-    rmcf = (ngx_http_rwd_main_conf_t *)ngx_http_get_module_main_conf(
-        r, ngx_http_rwd_module);
-    if (!rmcf->rwd_enable) {
-        return NGX_DECLINED;
-    }
-
-    rcrm.client_ip = 0;
-    rcrm.uri = rwd_pstrdup(r->pool, &r->uri);
-    n = rwd_copy_req_msg__get_packed_size(&rcrm);
-    buf = (uint8_t *)ngx_palloc(r->pool, n);
-    if (buf == NULL) {
-        return NGX_DECLINED;
-    }
-    rwd_copy_req_msg__pack(&rcrm, buf);
-
-    send(ngx_rwd_copy_req_fd, buf, n, MSG_DONTWAIT);
-    ngx_pfree(r->pool, buf);
-
-    return NGX_DECLINED;
 }
 
 static ngx_int_t
@@ -193,5 +205,75 @@ ngx_http_rwd_init_worker(ngx_cycle_t *cycle)
                       strerror(ngx_errno));
     }
 
+    return NGX_OK;
+}
+
+static char *
+rwd_pstrdup(ngx_pool_t *pool, ngx_str_t *src)
+{
+    char *dst;
+
+    dst = (char *)ngx_pnalloc(pool, src->len + 1);
+    if (dst == NULL) {
+        return NULL;
+    }
+
+    (void) ngx_copy(dst, src->data, src->len);
+    dst[src->len] = '\0';
+
+    return dst;
+}
+
+static ngx_int_t
+ngx_http_rwd_preaccess_handler(ngx_http_request_t *r)
+{
+    ngx_http_rwd_main_conf_t *rmcf;
+    RwdCopyReqMsg rcrm = RWD_COPY_REQ_MSG__INIT;
+    uint8_t *buf;
+    size_t n;
+
+    rmcf = (ngx_http_rwd_main_conf_t *)ngx_http_get_module_main_conf(
+        r, ngx_http_rwd_module);
+    if (!rmcf->rwd_enable) {
+        return NGX_DECLINED;
+    }
+
+    // client address
+    if (r->connection->sockaddr->sa_family == AF_INET) {
+        rcrm.client_ip = (uint32_t)
+            ((struct sockaddr_in *)r->connection->sockaddr)->sin_addr.s_addr;
+    }
+
+    // request URI
+    rcrm.uri = rwd_pstrdup(r->pool, &r->uri);
+
+    n = rwd_copy_req_msg__get_packed_size(&rcrm);
+    buf = (uint8_t *)ngx_palloc(r->pool, n);
+    if (buf == NULL) {
+        return NGX_DECLINED;
+    }
+    rwd_copy_req_msg__pack(&rcrm, buf);
+
+    send(ngx_rwd_copy_req_fd, buf, n, MSG_DONTWAIT);
+    ngx_pfree(r->pool, buf);
+
+    return NGX_DECLINED;
+}
+
+static char *
+ngx_http_rwd_config(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_core_loc_conf_t *clcf;
+
+    clcf = (ngx_http_core_loc_conf_t *)ngx_http_conf_get_module_main_conf(
+        cf, ngx_http_core_module);
+    clcf->handler = ngx_http_rwd_config_handler;
+
+    return NGX_CONF_OK;
+}
+
+static ngx_int_t
+ngx_http_rwd_config_handler(ngx_http_request_t *r)
+{
     return NGX_OK;
 }
