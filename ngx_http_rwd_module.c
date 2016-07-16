@@ -17,6 +17,13 @@ typedef struct {
 } ngx_http_rwd_main_conf_t;
 
 typedef struct {
+    ngx_rbtree_t rbtree;
+    ngx_rbtree_node_t sentinel;
+    ngx_rbtree_insert_pt insert;
+} ngx_http_rwd_blacklist_t;
+
+typedef struct {
+    ngx_http_rwd_blacklist_t ip_blacklist;
 } ngx_http_rwd_shctx_t;
 
 typedef struct {
@@ -139,6 +146,10 @@ ngx_http_rwd_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
     if (ctx->sh == NULL) {
         return NGX_ERROR;
     }
+
+    ngx_rbtree_init(&ctx->sh->ip_blacklist.rbtree,
+                    &ctx->sh->ip_blacklist.sentinel,
+                    ngx_rbtree_insert_value);
 
     return NGX_OK;
 }
