@@ -133,9 +133,8 @@ ngx_http_rwd_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
         return NGX_ERROR;
     }
 
-    ngx_rbtree_init(&ctx->sh->ip_bl.rbtree,
-                    &ctx->sh->ip_bl.sentinel,
-                    ngx_rbtree_insert_value);
+    ngx_rbtree_init(&ctx->sh->dm_cfg_rbtree, &ctx->sh->dm_cfg_sentinel,
+                    ngx_http_rwd_dm_cfg_rbtree_insert);
 
     return NGX_OK;
 }

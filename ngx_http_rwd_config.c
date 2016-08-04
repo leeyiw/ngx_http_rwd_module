@@ -2,6 +2,7 @@
 
 #include "ngx_http_rwd_config.h"
 #include "ngx_http_rwd_module.h"
+#include "ngx_http_rwd_utils.h"
 
 static ngx_int_t ngx_http_rwd_config_handler(ngx_http_request_t *r);
 static void ngx_http_rwd_config_dynamic_bl_add(ngx_http_request_t *r);
@@ -24,6 +25,106 @@ ngx_http_rwd_config(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     clcf->handler = ngx_http_rwd_config_handler;
 
     return NGX_CONF_OK;
+}
+
+static ngx_int_t
+ngx_http_rwd_ip_bl_rbtree_compare(ngx_rbtree_node_t *temp,
+                                  ngx_rbtree_node_t *node)
+{
+    ngx_http_rwd_bl_item_t *t = (ngx_http_rwd_bl_item_t *)temp;
+    ngx_http_rwd_bl_item_t *n = (ngx_http_rwd_bl_item_t *)node;
+
+    if (node->key != temp->key) {
+        return (node->key < temp->key) ? -1 : 1;
+    } else if (n->value.ip != t->value.ip) {
+        return (n->value.ip < t->value.ip) ? -1 : 1;
+    } else {
+        return 0;
+    }
+}
+
+void
+ngx_http_rwd_ip_bl_rbtree_insert(ngx_rbtree_node_t *temp,
+                                  ngx_rbtree_node_t *node,
+                                  ngx_rbtree_node_t *sentinel)
+{
+    return ngx_http_rwd_rbtree_insert_value(temp, node, sentinel,
+        ngx_http_rwd_ip_bl_rbtree_compare);
+}
+
+//static ngx_rbtree_node_t *
+//ngx_http_rwd_ip_bl_rbtree_lookup(ngx_rbtree_t *rbtree,
+//                                  ngx_rbtree_node_t *target)
+//{
+//    return ngx_http_rwd_rbtree_lookup_value(rbtree, target,
+//        ngx_http_rwd_ip_bl_rbtree_compare);
+//}
+
+static ngx_int_t
+ngx_http_rwd_dm_cfg_rbtree_compare(ngx_rbtree_node_t *temp,
+                                   ngx_rbtree_node_t *node)
+{
+    ngx_http_rwd_dm_cfg_t *t = (ngx_http_rwd_dm_cfg_t *)temp;
+    ngx_http_rwd_dm_cfg_t *n = (ngx_http_rwd_dm_cfg_t *)node;
+
+    if (node->key != temp->key) {
+        return (node->key < temp->key) ? -1 : 1;
+    } else if (n->dm.len != t->dm.len) {
+        return (n->dm.len < t->dm.len) ? -1 : 1;
+    } else {
+        return ngx_strncmp(n->dm.data, t->dm.data, n->dm.len);
+    }
+}
+
+void
+ngx_http_rwd_dm_cfg_rbtree_insert(ngx_rbtree_node_t *temp,
+                                  ngx_rbtree_node_t *node,
+                                  ngx_rbtree_node_t *sentinel)
+{
+    return ngx_http_rwd_rbtree_insert_value(temp, node, sentinel,
+        ngx_http_rwd_dm_cfg_rbtree_compare);
+}
+
+static ngx_rbtree_node_t *
+ngx_http_rwd_dm_cfg_rbtree_lookup(ngx_rbtree_t *rbtree,
+                                  ngx_rbtree_node_t *target)
+{
+    return ngx_http_rwd_rbtree_lookup_value(rbtree, target,
+        ngx_http_rwd_dm_cfg_rbtree_compare);
+}
+
+static ngx_http_rwd_dm_cfg_t *
+ngx_http_rwd_dm_cfg_rbtree_get(ngx_http_rwd_dm_cfg_t *target)
+{
+    ngx_http_rwd_dm_cfg_t *dm_cfg = NULL;
+
+    dm_cfg = (ngx_http_rwd_dm_cfg_t *)ngx_http_rwd_dm_cfg_rbtree_lookup(
+        &ngx_rwd_ctx.sh->dm_cfg_rbtree, &target->node);
+    if (dm_cfg != NULL) {
+        return dm_cfg;
+    }
+
+    dm_cfg = (ngx_http_rwd_dm_cfg_t *)ngx_slab_alloc_locked(
+        ngx_rwd_ctx.shpool, sizeof(ngx_http_rwd_dm_cfg_t));
+    if (dm_cfg == NULL) {
+        goto error;
+    }
+    dm_cfg->node.key = target->node.key;
+    dm_cfg->dm.len = target->dm.len;
+    dm_cfg->dm.data = (u_char *)ngx_slab_alloc_locked(ngx_rwd_ctx.shpool,
+        dm_cfg->dm.len);
+    ngx_rbtree_init(&dm_cfg->ip_bl.rbtree, &dm_cfg->ip_bl.sentinel,
+        ngx_http_rwd_ip_bl_rbtree_insert);
+
+    ngx_rbtree_insert(&ngx_rwd_ctx.sh->dm_cfg_rbtree, &dm_cfg->node);
+
+    return dm_cfg;
+
+error:
+    if (dm_cfg != NULL) {
+        ngx_slab_free_locked(ngx_rwd_ctx.shpool, dm_cfg);
+    } 
+    return NULL;
 }
 
 static ngx_int_t
@@ -170,7 +271,9 @@ static void
 ngx_http_rwd_config_dynamic_bl_add(ngx_http_request_t *r)
 {
     size_t i;
+    const char *key;
     json_t *json, *item_arr, *item;
+    ngx_http_rwd_dm_cfg_t target_dm_cfg, *dm_cfg;
     ngx_http_rwd_bl_item_t *bl_item;
 
     json = ngx_http_rwd_parse_request_body_into_json(r);
@@ -178,24 +281,32 @@ ngx_http_rwd_config_dynamic_bl_add(ngx_http_request_t *r)
         goto error;
     }
 
-    item_arr = json_object_get(json, "items");
-    if (item_arr == NULL || !json_is_array(item_arr)) {
-        goto error;
-    }
-
-    json_array_foreach(item_arr, i, item) {
-        bl_item = ngx_http_rwd_parse_bl_item(item);
-        if (bl_item == NULL) {
+    json_object_foreach(json, key, item_arr) {
+        if (item_arr == NULL || !json_is_array(item_arr)) {
             goto error;
         }
-        switch (bl_item->type) {
-        case NGX_HTTP_RWD_BL_ITEM_TYPE_IP:
-            ngx_rbtree_insert(&ngx_rwd_ctx.sh->ip_bl.rbtree,
-                              (ngx_rbtree_node_t *)bl_item);
-            break;
-        default:
-            ngx_slab_free_locked(ngx_rwd_ctx.shpool, bl_item);
+        /* get domain config, or create new domain config */
+        target_dm_cfg.dm.data = (u_char *)key;
+        target_dm_cfg.dm.len = ngx_strlen(key);
+        target_dm_cfg.node.key = ngx_crc32_short(target_dm_cfg.dm.data,
+                                                 target_dm_cfg.dm.len);
+        dm_cfg = ngx_http_rwd_dm_cfg_rbtree_get(&target_dm_cfg);
+        if (dm_cfg == NULL) {
             goto error;
+        }
+        json_array_foreach(item_arr, i, item) {
+            bl_item = ngx_http_rwd_parse_bl_item(item);
+            if (bl_item == NULL) {
+                goto error;
+            }
+            switch (bl_item->type) {
+            case NGX_HTTP_RWD_BL_ITEM_TYPE_IP:
+                ngx_rbtree_insert(&dm_cfg->ip_bl.rbtree, &bl_item->node);
+                break;
+            default:
+                ngx_slab_free_locked(ngx_rwd_ctx.shpool, bl_item);
+                goto error;
+            }
         }
     }
 

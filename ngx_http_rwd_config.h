@@ -28,6 +28,12 @@ typedef struct {
 } ngx_http_rwd_bl_t;
 
 typedef struct {
+    ngx_rbtree_node_t node;
+    ngx_str_t dm;
+    ngx_http_rwd_bl_t ip_bl;
+} ngx_http_rwd_dm_cfg_t;
+
+typedef struct {
     ngx_str_t uri;
     ngx_int_t method;
     union {
@@ -38,5 +44,8 @@ typedef struct {
 
 extern char *ngx_http_rwd_config(ngx_conf_t *cf, ngx_command_t *cmd,
                                  void *conf);
+extern void ngx_http_rwd_dm_cfg_rbtree_insert(ngx_rbtree_node_t *temp,
+                                              ngx_rbtree_node_t *node,
+                                              ngx_rbtree_node_t *sentinel);
 
 #endif /* ifndef _NGX_HTTP_RWD_CONFIG_H_ */

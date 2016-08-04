@@ -4,7 +4,8 @@
 #include "ngx_http_rwd_config.h"
 
 typedef struct {
-    ngx_http_rwd_bl_t ip_bl;
+    ngx_rbtree_t dm_cfg_rbtree;
+    ngx_rbtree_node_t dm_cfg_sentinel;
 } ngx_http_rwd_shctx_t;
 
 typedef struct {
