@@ -11,6 +11,9 @@ ngx_http_rwd_rbtree_insert_value(ngx_rbtree_node_t *temp,
 
     for (;;) {
         compare_result = compare_func(temp, node);
+        if (compare_result == 0) {
+            return;
+        }
         p = compare_result < 0 ? &temp->left : &temp->right;
         if (*p == sentinel) {
             break;

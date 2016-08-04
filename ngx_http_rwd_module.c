@@ -9,21 +9,15 @@
 
 #include "ngx_http_rwd_module.h"
 #include "ngx_http_rwd_config.h"
-#include "rwd.pb-c.h"
+#include "ngx_http_rwd_block.h"
+#include "ngx_http_rwd_copy_request.h"
 
 #define NGX_HTTP_RWD_DEFAULT_SHM_SIZE   (32*1024*1024)
-
-typedef struct {
-    ngx_flag_t rwd_enable;
-    ngx_str_t rwd_copy_req_sock;
-} ngx_http_rwd_main_conf_t;
 
 static void *ngx_http_rwd_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_rwd_init_main_conf(ngx_conf_t *cf, void *conf);
 static ngx_int_t ngx_http_rwd_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_rwd_init_worker(ngx_cycle_t *cycle);
-static ngx_int_t ngx_http_rwd_block_handler(ngx_http_request_t *r);
-static ngx_int_t ngx_http_rwd_copy_request_handler(ngx_http_request_t *r);
 
 static ngx_command_t ngx_http_rwd_commands[] = {
     {
@@ -82,7 +76,6 @@ ngx_module_t ngx_http_rwd_module = {
     NGX_MODULE_V1_PADDING
 };
 
-static ngx_socket_t ngx_rwd_copy_req_fd = 0;
 static ngx_shm_zone_t *ngx_rwd_shm_zone = NULL;
 
 ngx_http_rwd_ctx_t ngx_rwd_ctx;
@@ -178,7 +171,6 @@ ngx_http_rwd_init(ngx_conf_t *cf)
 static ngx_int_t
 ngx_http_rwd_init_worker(ngx_cycle_t *cycle)
 {
-    struct sockaddr_un copy_req_addr;
     ngx_http_rwd_main_conf_t *rmcf;
 
     rmcf = (ngx_http_rwd_main_conf_t *)ngx_http_cycle_get_module_main_conf(
@@ -190,97 +182,7 @@ ngx_http_rwd_init_worker(ngx_cycle_t *cycle)
         return NGX_OK;
     }
 
-    ngx_rwd_copy_req_fd = ngx_socket(AF_UNIX, SOCK_DGRAM, 0);
-    if (ngx_rwd_copy_req_fd == -1) {
-        ngx_log_error(NGX_LOG_CRIT, cycle->log, 0,
-                      "[rwd] create ngx_rwd_copy_req_fd failed: %s",
-                      strerror(ngx_errno));
-        return NGX_ERROR;
-    }
-    ngx_memzero(&copy_req_addr, sizeof(copy_req_addr));
-    copy_req_addr.sun_family = AF_UNIX;
-    (void) ngx_copy(copy_req_addr.sun_path, rmcf->rwd_copy_req_sock.data,
-                    rmcf->rwd_copy_req_sock.len);
-
-    if (connect(ngx_rwd_copy_req_fd, (struct sockaddr *)&copy_req_addr,
-                sizeof(copy_req_addr)) != 0) {
-        ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
-                      "[rwd] connect ngx_rwd_copy_req_fd failed: %s",
-                      strerror(ngx_errno));
-    }
+    ngx_http_rwd_copy_request_init(cycle, rmcf);
 
     return NGX_OK;
-}
-
-static char *
-rwd_pstrdup(ngx_pool_t *pool, ngx_str_t *src)
-{
-    char *dst;
-
-    dst = (char *)ngx_pnalloc(pool, src->len + 1);
-    if (dst == NULL) {
-        return NULL;
-    }
-
-    (void) ngx_copy(dst, src->data, src->len);
-    dst[src->len] = '\0';
-
-    return dst;
-}
-
-static ngx_int_t
-ngx_http_rwd_block_handler(ngx_http_request_t *r)
-{
-    //ngx_uint_t client_ip;
-    ngx_http_rwd_main_conf_t *rmcf;
-
-    rmcf = (ngx_http_rwd_main_conf_t *)ngx_http_get_module_main_conf(
-        r, ngx_http_rwd_module);
-    if (!rmcf->rwd_enable) {
-        return NGX_DECLINED;
-    }
-
-    // check if client IP address in blacklist
-    //if (r->connection->sockaddr->sa_family == AF_INET) {
-    //    client_ip = (uint32_t)
-    //        ((struct sockaddr_in *)r->connection->sockaddr)->sin_addr.s_addr;
-    //}
-
-    return NGX_DECLINED;
-}
-
-static ngx_int_t
-ngx_http_rwd_copy_request_handler(ngx_http_request_t *r)
-{
-    ngx_http_rwd_main_conf_t *rmcf;
-    RwdCopyReqMsg rcrm = RWD_COPY_REQ_MSG__INIT;
-    uint8_t *buf;
-    size_t n;
-
-    rmcf = (ngx_http_rwd_main_conf_t *)ngx_http_get_module_main_conf(
-        r, ngx_http_rwd_module);
-    if (!rmcf->rwd_enable) {
-        return NGX_DECLINED;
-    }
-
-    // client address
-    if (r->connection->sockaddr->sa_family == AF_INET) {
-        rcrm.client_ip = (uint32_t)
-            ((struct sockaddr_in *)r->connection->sockaddr)->sin_addr.s_addr;
-    }
-
-    // request URI
-    rcrm.uri = rwd_pstrdup(r->pool, &r->uri);
-
-    n = rwd_copy_req_msg__get_packed_size(&rcrm);
-    buf = (uint8_t *)ngx_palloc(r->pool, n);
-    if (buf == NULL) {
-        return NGX_DECLINED;
-    }
-    rwd_copy_req_msg__pack(&rcrm, buf);
-
-    send(ngx_rwd_copy_req_fd, buf, n, MSG_DONTWAIT);
-    ngx_pfree(r->pool, buf);
-
-    return NGX_DECLINED;
 }

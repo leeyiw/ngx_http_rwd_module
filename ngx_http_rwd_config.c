@@ -113,6 +113,10 @@ ngx_http_rwd_dm_cfg_rbtree_get(ngx_http_rwd_dm_cfg_t *target)
     dm_cfg->dm.len = target->dm.len;
     dm_cfg->dm.data = (u_char *)ngx_slab_alloc_locked(ngx_rwd_ctx.shpool,
         dm_cfg->dm.len);
+    if (dm_cfg->dm.data == NULL) {
+        goto error;
+    }
+    ngx_memcpy(dm_cfg->dm.data, target->dm.data, dm_cfg->dm.len);
     ngx_rbtree_init(&dm_cfg->ip_bl.rbtree, &dm_cfg->ip_bl.sentinel,
         ngx_http_rwd_ip_bl_rbtree_insert);
 
@@ -122,8 +126,11 @@ ngx_http_rwd_dm_cfg_rbtree_get(ngx_http_rwd_dm_cfg_t *target)
 
 error:
     if (dm_cfg != NULL) {
+        if (dm_cfg->dm.data != NULL) {
+            ngx_slab_free_locked(ngx_rwd_ctx.shpool, dm_cfg->dm.data);
+        }
         ngx_slab_free_locked(ngx_rwd_ctx.shpool, dm_cfg);
-    } 
+    }
     return NULL;
 }
 
