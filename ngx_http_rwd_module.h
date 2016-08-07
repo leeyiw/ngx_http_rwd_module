@@ -9,6 +9,10 @@ typedef struct {
 } ngx_http_rwd_shctx_t;
 
 typedef struct {
+    ngx_str_t host;
+} ngx_http_rwd_module_ctx_t;
+
+typedef struct {
     ngx_http_rwd_shctx_t *sh;
     ngx_slab_pool_t *shpool;
 } ngx_http_rwd_ctx_t;

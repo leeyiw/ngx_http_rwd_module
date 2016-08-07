@@ -135,6 +135,12 @@ error:
 }
 
 static ngx_int_t
+ngx_http_rwd_config_default_handler(ngx_http_request_t *r)
+{
+    return NGX_OK;
+}
+
+static ngx_int_t
 ngx_http_rwd_config_handler(ngx_http_request_t *r)
 {
     size_t i;
@@ -165,7 +171,7 @@ ngx_http_rwd_config_handler(ngx_http_request_t *r)
         }
     }
 
-    return NGX_OK;
+    return ngx_http_rwd_config_default_handler(r);
 }
 
 static void

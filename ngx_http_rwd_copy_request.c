@@ -4,7 +4,8 @@
 #include "ngx_http_rwd_module.h"
 #include "rwd.pb-c.h"
 
-static ngx_socket_t ngx_rwd_copy_req_fd = 0;
+static ngx_socket_t copy_req_fd = 0;
+static ngx_int_t copy_req_connected = 0;
 
 static char *
 rwd_pstrdup(ngx_pool_t *pool, ngx_str_t *src)
@@ -28,10 +29,10 @@ ngx_http_rwd_copy_request_init(ngx_cycle_t *cycle,
 {
     struct sockaddr_un copy_req_addr;
 
-    ngx_rwd_copy_req_fd = ngx_socket(AF_UNIX, SOCK_DGRAM, 0);
-    if (ngx_rwd_copy_req_fd == -1) {
+    copy_req_fd = ngx_socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (copy_req_fd == -1) {
         ngx_log_error(NGX_LOG_CRIT, cycle->log, 0,
-                      "[rwd] create ngx_rwd_copy_req_fd failed: %s",
+                      "[rwd] create copy_req_fd failed: %s",
                       strerror(ngx_errno));
         return NGX_ERROR;
     }
@@ -40,13 +41,15 @@ ngx_http_rwd_copy_request_init(ngx_cycle_t *cycle,
     (void) ngx_copy(copy_req_addr.sun_path, rmcf->rwd_copy_req_sock.data,
                     rmcf->rwd_copy_req_sock.len);
 
-    if (connect(ngx_rwd_copy_req_fd, (struct sockaddr *)&copy_req_addr,
+    if (connect(copy_req_fd, (struct sockaddr *)&copy_req_addr,
                 sizeof(copy_req_addr)) != 0) {
         ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
-                      "[rwd] connect ngx_rwd_copy_req_fd failed: %s",
+                      "[rwd] connect copy_req_fd failed: %s",
                       strerror(ngx_errno));
         return NGX_ERROR;
     }
+    
+    copy_req_connected = 1;
 
     return NGX_OK;
 }
@@ -62,6 +65,10 @@ ngx_http_rwd_copy_request_handler(ngx_http_request_t *r)
     rmcf = (ngx_http_rwd_main_conf_t *)ngx_http_get_module_main_conf(
         r, ngx_http_rwd_module);
     if (!rmcf->rwd_enable) {
+        return NGX_DECLINED;
+    }
+
+    if (!copy_req_connected) {
         return NGX_DECLINED;
     }
 
@@ -81,7 +88,7 @@ ngx_http_rwd_copy_request_handler(ngx_http_request_t *r)
     }
     rwd_copy_req_msg__pack(&rcrm, buf);
 
-    send(ngx_rwd_copy_req_fd, buf, n, MSG_DONTWAIT);
+    send(copy_req_fd, buf, n, MSG_DONTWAIT);
     ngx_pfree(r->pool, buf);
 
     return NGX_DECLINED;
